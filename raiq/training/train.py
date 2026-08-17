@@ -224,6 +224,24 @@ def run_training(args: argparse.Namespace) -> Path:
         )
         start_step = int(payload["step"])
 
+    history: list[dict[str, float | int]] = []
+    metrics_path = output_dir / "metrics.json"
+    if start_step > 0:
+        if not metrics_path.is_file():
+            raise FileNotFoundError(
+                f"cannot resume at step {start_step} without existing metrics: {metrics_path}"
+            )
+        loaded_history = json.loads(metrics_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded_history, list) or not loaded_history:
+            raise ValueError(f"resume metrics must be a non-empty list: {metrics_path}")
+        final_record = loaded_history[-1]
+        if int(final_record.get("step", -1)) != start_step:
+            raise ValueError(
+                f"resume metrics end at step {final_record.get('step')}, "
+                f"but checkpoint is step {start_step}"
+            )
+        history = loaded_history
+
     metadata = {
         "model": base_model.metadata(),
         "dataset": run_config.data.to_dict(),
@@ -241,6 +259,7 @@ def run_training(args: argparse.Namespace) -> Path:
         "torch": torch.__version__,
         "platform": platform.platform(),
         "started_at_unix": time.time(),
+        "resume_checkpoint": None if args.resume is None else str(Path(args.resume).resolve()),
     }
     if context.is_primary:
         (output_dir / "run_config.json").write_text(
@@ -251,7 +270,6 @@ def run_training(args: argparse.Namespace) -> Path:
         )
 
     train_iterator = cycle(train_loader)
-    history: list[dict[str, float | int]] = []
     model.train()
     optimizer.zero_grad(set_to_none=True)
     tokens_processed = 0

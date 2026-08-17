@@ -138,3 +138,21 @@ def test_cpu_run_persists_token_throughput_metadata(tmp_path) -> None:
     assert metadata["tokens_per_second_per_rank"] > 0.0
     assert metadata["estimated_global_tokens_per_second"] > 0.0
     assert "cuda_peak_memory_allocated_bytes" not in metadata
+
+    resumed_checkpoint = run_training(
+        argparse.Namespace(
+            config=str(config_path),
+            run_name="cpu-telemetry",
+            output_dir=str(tmp_path / "artifacts"),
+            max_steps=2,
+            resume=str(checkpoint),
+        )
+    )
+    history = json.loads((resumed_checkpoint.parent / "metrics.json").read_text(encoding="utf-8"))
+    resumed_metadata = json.loads(
+        (resumed_checkpoint.parent / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert [record["step"] for record in history] == [1, 2]
+    assert resumed_metadata["start_step"] == 1
+    assert resumed_metadata["optimizer_steps_completed"] == 1
+    assert resumed_metadata["resume_checkpoint"] == str(checkpoint.resolve())
