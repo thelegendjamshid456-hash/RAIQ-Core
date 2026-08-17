@@ -162,6 +162,8 @@ def run_training(args: argparse.Namespace) -> Path:
     max_steps = args.max_steps if args.max_steps is not None else training.max_steps
     if max_steps <= 0:
         raise ValueError("max_steps must be positive")
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
 
     output_dir = Path(args.output_dir) / args.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -252,6 +254,7 @@ def run_training(args: argparse.Namespace) -> Path:
     history: list[dict[str, float | int]] = []
     model.train()
     optimizer.zero_grad(set_to_none=True)
+    tokens_processed = 0
     started = time.perf_counter()
     for step in range(start_step, max_steps):
         if train_sampler is not None:
@@ -270,6 +273,7 @@ def run_training(args: argparse.Namespace) -> Path:
         for _ in range(training.grad_accumulation_steps):
             inputs, labels = next(train_iterator)
             inputs, labels = inputs.to(device), labels.to(device)
+            tokens_processed += inputs.numel()
             autocast_context = (
                 torch.autocast(device_type=device.type, dtype=dtype)
                 if device.type == "cuda" and dtype != torch.float32
@@ -341,8 +345,22 @@ def run_training(args: argparse.Namespace) -> Path:
     metadata["completed_at_unix"] = time.time()
     metadata["elapsed_seconds"] = elapsed_seconds
     metadata["max_steps"] = max_steps
+    metadata["start_step"] = start_step
+    metadata["optimizer_steps_completed"] = max_steps - start_step
     metadata["world_size"] = context.world_size
     metadata["rank"] = context.rank
+    metadata["tokens_processed_per_rank"] = tokens_processed
+    metadata["tokens_per_second_per_rank"] = tokens_processed / max(elapsed_seconds, 1e-12)
+    metadata["global_tokens_processed"] = tokens_processed * context.world_size
+    metadata["estimated_global_tokens_per_second"] = (
+        tokens_processed * context.world_size / max(elapsed_seconds, 1e-12)
+    )
+    if device.type == "cuda":
+        properties = torch.cuda.get_device_properties(device)
+        metadata["cuda_device_name"] = torch.cuda.get_device_name(device)
+        metadata["cuda_total_memory_bytes"] = properties.total_memory
+        metadata["cuda_peak_memory_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
+        metadata["cuda_peak_memory_reserved_bytes"] = torch.cuda.max_memory_reserved(device)
     if context.is_primary:
         (output_dir / "metadata.json").write_text(
             json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"

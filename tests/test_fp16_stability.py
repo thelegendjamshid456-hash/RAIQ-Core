@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import argparse
+import json
+from pathlib import Path
+
 import pytest
 import torch
 
 from raiq.core import ModelConfig, RAIQModel
 from raiq.training.checkpoints import load_checkpoint, save_checkpoint
-from raiq.training.train import _check_finite_gradients, _check_finite_loss, _make_grad_scaler
+from raiq.training.train import (
+    _check_finite_gradients,
+    _check_finite_loss,
+    _make_grad_scaler,
+    run_training,
+)
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class FakeScaler:
@@ -97,3 +109,32 @@ def test_one_hundred_optimizer_steps_keep_loss_and_gradients_finite() -> None:
         assert torch.isfinite(torch.as_tensor(pre_clip_norm))
         assert clipped_gradient_norm <= 1.0 + 1e-5
         optimizer.step()
+
+
+def test_cpu_run_persists_token_throughput_metadata(tmp_path) -> None:
+    config_path = tmp_path / "tiny_cpu.yaml"
+    config_text = (ROOT / "configs/tiny.yaml").read_text(encoding="utf-8")
+    config_text = config_text.replace(
+        "train_path: datasets/technical_toy_train.txt",
+        f"train_path: {ROOT / 'datasets/technical_toy_train.txt'}",
+    )
+    config_text = config_text.replace(
+        "validation_path: datasets/technical_toy_validation.txt",
+        f"validation_path: {ROOT / 'datasets/technical_toy_validation.txt'}",
+    )
+    config_path.write_text(config_text, encoding="utf-8")
+    checkpoint = run_training(
+        argparse.Namespace(
+            config=str(config_path),
+            run_name="cpu-telemetry",
+            output_dir=str(tmp_path / "artifacts"),
+            max_steps=1,
+            resume=None,
+        )
+    )
+    metadata = json.loads((checkpoint.parent / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["tokens_processed_per_rank"] == 512
+    assert metadata["global_tokens_processed"] == 512
+    assert metadata["tokens_per_second_per_rank"] > 0.0
+    assert metadata["estimated_global_tokens_per_second"] > 0.0
+    assert "cuda_peak_memory_allocated_bytes" not in metadata
