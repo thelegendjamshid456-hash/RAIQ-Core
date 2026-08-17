@@ -92,5 +92,8 @@ def test_one_hundred_optimizer_steps_keep_loss_and_gradients_finite() -> None:
         output.loss.backward()
         gradient_norm = _check_finite_gradients(model, step)
         assert torch.isfinite(torch.tensor(gradient_norm))
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        pre_clip_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        clipped_gradient_norm = _check_finite_gradients(model, step)
+        assert torch.isfinite(torch.as_tensor(pre_clip_norm))
+        assert clipped_gradient_norm <= 1.0 + 1e-5
         optimizer.step()

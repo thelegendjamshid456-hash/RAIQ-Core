@@ -291,9 +291,16 @@ def run_training(args: argparse.Namespace) -> Path:
         if scaler is not None:
             scaler.unscale_(optimizer)
         gradient_norm = _check_finite_gradients(model, step + 1)
-        clipped_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), training.grad_clip_norm)
-        if not torch.isfinite(torch.as_tensor(clipped_norm)).all():
-            raise RuntimeError(f"non-finite clipped gradient norm at step {step + 1}")
+        pre_clip_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), training.grad_clip_norm)
+        if not torch.isfinite(torch.as_tensor(pre_clip_norm)).all():
+            raise RuntimeError(f"non-finite pre-clip gradient norm at step {step + 1}")
+        clipped_gradient_norm = _check_finite_gradients(model, step + 1)
+        clip_tolerance = max(1e-6, training.grad_clip_norm * 1e-5)
+        if clipped_gradient_norm > training.grad_clip_norm + clip_tolerance:
+            raise RuntimeError(
+                f"gradient clipping exceeded its threshold at step {step + 1}: "
+                f"{clipped_gradient_norm} > {training.grad_clip_norm}"
+            )
         if scaler is not None:
             scaler.step(optimizer)
             scaler.update()
@@ -307,7 +314,7 @@ def run_training(args: argparse.Namespace) -> Path:
             "train_loss": accumulated_loss / training.grad_accumulation_steps,
             "learning_rate": lr,
             "gradient_norm": gradient_norm,
-            "clipped_gradient_norm": float(clipped_norm),
+            "clipped_gradient_norm": clipped_gradient_norm,
         }
         if scaler is not None:
             record["grad_scaler_scale"] = float(scaler.get_scale())
