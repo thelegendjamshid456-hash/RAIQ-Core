@@ -42,6 +42,7 @@ def save_checkpoint(
     step: int,
     run_config: dict[str, Any],
     metadata: dict[str, Any],
+    scaler: Any | None = None,
 ) -> Path:
     """Atomically save all information necessary to continue a training run."""
 
@@ -57,6 +58,8 @@ def save_checkpoint(
         "rng_state": capture_rng_state(),
         "torch_version": torch.__version__,
     }
+    if scaler is not None:
+        payload["scaler_state"] = scaler.state_dict()
     temporary = target.with_suffix(target.suffix + ".tmp")
     torch.save(payload, temporary)
     os.replace(temporary, target)
@@ -70,6 +73,7 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer | None = None,
     map_location: str | torch.device = "cpu",
     restore_rng: bool = False,
+    scaler: Any | None = None,
 ) -> dict[str, Any]:
     """Load a RAIQ Core checkpoint and return the recorded run information."""
 
@@ -79,6 +83,8 @@ def load_checkpoint(
     model.load_state_dict(payload["model_state"])
     if optimizer is not None:
         optimizer.load_state_dict(payload["optimizer_state"])
+    if scaler is not None and "scaler_state" in payload:
+        scaler.load_state_dict(payload["scaler_state"])
     if restore_rng:
         if "rng_state" not in payload:
             raise ValueError("checkpoint does not contain the RNG state required for deterministic resume")

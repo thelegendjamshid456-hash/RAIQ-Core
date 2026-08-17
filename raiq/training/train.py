@@ -46,6 +46,38 @@ def build_optimizer(model: RAIQModel, learning_rate: float, weight_decay: float)
     )
 
 
+def _make_grad_scaler(device: torch.device, dtype: torch.dtype) -> torch.amp.GradScaler | None:
+    """Create a scaler only for CUDA FP16; keep FP32 and BF16 paths unscaled."""
+
+    if device.type != "cuda" or dtype != torch.float16:
+        return None
+    try:
+        return torch.amp.GradScaler("cuda", enabled=True)
+    except (AttributeError, TypeError):
+        return torch.cuda.amp.GradScaler(enabled=True)
+
+
+def _check_finite_loss(loss: Tensor, step: int) -> None:
+    if not torch.isfinite(loss.detach()).all():
+        raise RuntimeError(f"non-finite training loss at step {step}: {float(loss.detach())}")
+
+
+def _check_finite_gradients(model: torch.nn.Module, step: int) -> float:
+    total_squared = 0.0
+    seen = False
+    for parameter in model.parameters():
+        if parameter.grad is None:
+            continue
+        seen = True
+        gradient = parameter.grad.detach()
+        if not torch.isfinite(gradient).all():
+            raise RuntimeError(f"non-finite gradient at step {step}")
+        total_squared += float(torch.sum(gradient.float() * gradient.float()).cpu())
+    if not seen:
+        raise RuntimeError(f"no gradients produced at step {step}")
+    return math.sqrt(total_squared)
+
+
 def cycle(loader: DataLoader[tuple[Tensor, Tensor]]) -> Iterator[tuple[Tensor, Tensor]]:
     """Repeat a deterministic data loader indefinitely."""
 
@@ -123,7 +155,8 @@ def run_training(args: argparse.Namespace) -> Path:
     )
     validation_loader = DataLoader(validation_dataset, batch_size=training.batch_size, shuffle=False)
 
-    model = RAIQModel(run_config.model).to(device=device, dtype=dtype)
+    # Keep trainable master parameters in FP32. CUDA autocast controls forward precision.
+    model = RAIQModel(run_config.model).to(device=device, dtype=torch.float32)
     if context.enabled:
         model = DistributedDataParallel(
             model,
@@ -132,6 +165,7 @@ def run_training(args: argparse.Namespace) -> Path:
         )
     base_model = model.module if isinstance(model, DistributedDataParallel) else model
     optimizer = build_optimizer(model, training.learning_rate, training.weight_decay)
+    scaler = _make_grad_scaler(device, dtype)
     start_step = 0
     if args.resume is not None:
         payload = load_checkpoint(
@@ -140,6 +174,7 @@ def run_training(args: argparse.Namespace) -> Path:
             optimizer=optimizer,
             map_location=device,
             restore_rng=True,
+            scaler=scaler,
         )
         start_step = int(payload["step"])
 
@@ -200,12 +235,26 @@ def run_training(args: argparse.Namespace) -> Path:
                 output = model(inputs, labels=labels)
                 if output.loss is None:
                     raise RuntimeError("training forward pass did not return a loss")
-                scaled_loss = output.loss / training.grad_accumulation_steps
-            scaled_loss.backward()
-            accumulated_loss += float(output.loss.detach().cpu())
+                loss = output.loss
+                _check_finite_loss(loss, step + 1)
+                scaled_loss = loss / training.grad_accumulation_steps
+            if scaler is not None:
+                scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+            accumulated_loss += float(loss.detach().cpu())
 
-        torch.nn.utils.clip_grad_norm_(model.parameters(), training.grad_clip_norm)
-        optimizer.step()
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+        gradient_norm = _check_finite_gradients(model, step + 1)
+        clipped_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), training.grad_clip_norm)
+        if not torch.isfinite(torch.as_tensor(clipped_norm)).all():
+            raise RuntimeError(f"non-finite clipped gradient norm at step {step + 1}")
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         completed_step = step + 1
 
@@ -213,7 +262,11 @@ def run_training(args: argparse.Namespace) -> Path:
             "step": completed_step,
             "train_loss": accumulated_loss / training.grad_accumulation_steps,
             "learning_rate": lr,
+            "gradient_norm": gradient_norm,
+            "clipped_gradient_norm": float(clipped_norm),
         }
+        if scaler is not None:
+            record["grad_scaler_scale"] = float(scaler.get_scale())
         if completed_step % training.eval_interval == 0 or completed_step == max_steps:
             validation_loss = evaluate(model, validation_loader, device)
             record["validation_loss"] = validation_loss
@@ -230,6 +283,7 @@ def run_training(args: argparse.Namespace) -> Path:
                 step=completed_step,
                 run_config=run_config.to_dict(),
                 metadata=metadata,
+                scaler=scaler,
             )
 
     elapsed_seconds = time.perf_counter() - started
@@ -252,6 +306,7 @@ def run_training(args: argparse.Namespace) -> Path:
             step=max_steps,
             run_config=run_config.to_dict(),
             metadata=metadata,
+            scaler=scaler,
         )
     else:
         result = output_dir / "checkpoint_last.pt"
