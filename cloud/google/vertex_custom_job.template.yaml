@@ -1,0 +1,46 @@
+# Template only. Replace every ALL_CAPS placeholder after production preflight passes.
+displayName: RAIQ_200M_V1_PRETRAIN
+jobSpec:
+  baseOutputDirectory:
+    outputUriPrefix: gs://RAIQ_OUTPUT_BUCKET/runs/RAIQ_200M_V1_PRETRAIN
+  workerPoolSpecs:
+    - replicaCount: 1
+      machineSpec:
+        machineType: GPU_MACHINE_TYPE
+        acceleratorType: GPU_ACCELERATOR_TYPE
+        acceleratorCount: GPU_COUNT_PER_MACHINE
+      diskSpec:
+        bootDiskType: pd-ssd
+        bootDiskSizeGb: 500
+      containerSpec:
+        imageUri: REGION-docker.pkg.dev/PROJECT_ID/raiq/raiq-pretrain:IMAGE_TAG
+        args:
+          - --config
+          - configs/200m_production.yaml
+          - --run-name
+          - RAIQ_200M_V1_PRETRAIN
+          - --output-dir
+          - /gcs/RAIQ_OUTPUT_BUCKET/runs
+    - replicaCount: WORKER_REPLICA_COUNT
+      machineSpec:
+        machineType: GPU_MACHINE_TYPE
+        acceleratorType: GPU_ACCELERATOR_TYPE
+        acceleratorCount: GPU_COUNT_PER_MACHINE
+      diskSpec:
+        bootDiskType: pd-ssd
+        bootDiskSizeGb: 500
+      containerSpec:
+        imageUri: REGION-docker.pkg.dev/PROJECT_ID/raiq/raiq-pretrain:IMAGE_TAG
+        args:
+          - --config
+          - configs/200m_production.yaml
+          - --run-name
+          - RAIQ_200M_V1_PRETRAIN
+          - --output-dir
+          - /gcs/RAIQ_OUTPUT_BUCKET/runs
+  scheduling:
+    timeout: 1209600s
+labels:
+  system: raiq
+  stage: pretraining
+  model: raiq-200m-v1

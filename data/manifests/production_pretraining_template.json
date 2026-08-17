@@ -1,0 +1,23 @@
+{
+  "corpus_id": "raiq-production-unassigned",
+  "purpose": "Template for RAIQ-200M production pretraining corpus approval.",
+  "production_eligible": false,
+  "license_status": "unapproved",
+  "approval": {
+    "approved_by": null,
+    "approved_at": null,
+    "scope": null
+  },
+  "source_records": [],
+  "quality_report": null,
+  "deduplication_report": null,
+  "contamination_policy": null,
+  "splits": [],
+  "required_before_training": [
+    "Every source record must state provenance, license basis, retrieval date, hash, and allowed use.",
+    "Every source must pass a documented licensing review.",
+    "Quality, deduplication, and benchmark-contamination reports must be completed.",
+    "Training, validation, and benchmark material must be split under a recorded policy.",
+    "The approval record must be completed by an authorized project owner."
+  ]
+}

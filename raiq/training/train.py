@@ -14,6 +14,7 @@ from typing import Iterator
 import torch
 from torch import Tensor
 from torch.optim import AdamW
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
 
 from raiq.core import RAIQModel, load_config
@@ -22,6 +23,8 @@ from raiq.data.text_dataset import TextBlockDataset
 from raiq.tokenizer.byte_tokenizer import ByteTokenizer
 from raiq.tokenizer.loader import load_tokenizer
 from raiq.training.checkpoints import load_checkpoint, save_checkpoint
+from raiq.training.distributed import cleanup_distributed, initialize_distributed
+from raiq.training.loaders import build_training_loader
 from raiq.training.utils import resolve_device, resolve_dtype, set_seed, warmup_cosine_lr
 
 
@@ -79,8 +82,9 @@ def run_training(args: argparse.Namespace) -> Path:
 
     run_config = load_config(args.config)
     training = run_config.training
-    set_seed(training.seed)
-    device = resolve_device(training.device)
+    context = initialize_distributed(training.device)
+    set_seed(training.seed + context.rank)
+    device = context.device if context.enabled else resolve_device(training.device)
     dtype = resolve_dtype(training.dtype, device)
     max_steps = args.max_steps if args.max_steps is not None else training.max_steps
     if max_steps <= 0:
@@ -111,25 +115,36 @@ def run_training(args: argparse.Namespace) -> Path:
     }
     train_dataset = TextBlockDataset(run_config.data.train_path, tokenizer, run_config.model.max_seq_len)
     validation_dataset = TextBlockDataset(run_config.data.validation_path, tokenizer, run_config.model.max_seq_len)
-    generator = torch.Generator().manual_seed(training.seed)
-    train_loader = DataLoader(
+    train_loader, train_sampler = build_training_loader(
         train_dataset,
         batch_size=training.batch_size,
-        shuffle=True,
-        generator=generator,
-        drop_last=False,
+        context=context,
+        seed=training.seed,
     )
     validation_loader = DataLoader(validation_dataset, batch_size=training.batch_size, shuffle=False)
 
     model = RAIQModel(run_config.model).to(device=device, dtype=dtype)
+    if context.enabled:
+        model = DistributedDataParallel(
+            model,
+            device_ids=[context.local_rank] if device.type == "cuda" else None,
+            bucket_cap_mb=64,
+        )
+    base_model = model.module if isinstance(model, DistributedDataParallel) else model
     optimizer = build_optimizer(model, training.learning_rate, training.weight_decay)
     start_step = 0
     if args.resume is not None:
-        payload = load_checkpoint(args.resume, model=model, optimizer=optimizer, map_location=device)
+        payload = load_checkpoint(
+            args.resume,
+            model=model,
+            optimizer=optimizer,
+            map_location=device,
+            restore_rng=True,
+        )
         start_step = int(payload["step"])
 
     metadata = {
-        "model": model.metadata(),
+        "model": base_model.metadata(),
         "dataset": run_config.data.to_dict(),
         "tokenizer": tokenizer.to_dict(),
         "tokenizer_path": str(tokenizer_path),
@@ -146,12 +161,13 @@ def run_training(args: argparse.Namespace) -> Path:
         "platform": platform.platform(),
         "started_at_unix": time.time(),
     }
-    (output_dir / "run_config.json").write_text(
-        json.dumps(run_config.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    (output_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    if context.is_primary:
+        (output_dir / "run_config.json").write_text(
+            json.dumps(run_config.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        (output_dir / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
     train_iterator = cycle(train_loader)
     history: list[dict[str, float | int]] = []
@@ -159,6 +175,8 @@ def run_training(args: argparse.Namespace) -> Path:
     optimizer.zero_grad(set_to_none=True)
     started = time.perf_counter()
     for step in range(start_step, max_steps):
+        if train_sampler is not None:
+            train_sampler.set_epoch(step)
         lr = warmup_cosine_lr(
             step,
             max_steps=max_steps,
@@ -202,9 +220,9 @@ def run_training(args: argparse.Namespace) -> Path:
             record["validation_perplexity"] = math.exp(min(validation_loss, 20.0))
             model.train()
         history.append(record)
-        if completed_step % training.log_interval == 0 or completed_step == 1:
+        if context.is_primary and (completed_step % training.log_interval == 0 or completed_step == 1):
             print(json.dumps(record, sort_keys=True), flush=True)
-        if completed_step % training.save_interval == 0:
+        if context.is_primary and completed_step % training.save_interval == 0:
             save_checkpoint(
                 output_dir / f"checkpoint_step_{completed_step}.pt",
                 model=model,
@@ -218,20 +236,27 @@ def run_training(args: argparse.Namespace) -> Path:
     metadata["completed_at_unix"] = time.time()
     metadata["elapsed_seconds"] = elapsed_seconds
     metadata["max_steps"] = max_steps
-    (output_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    (output_dir / "metrics.json").write_text(
-        json.dumps(history, indent=2) + "\n", encoding="utf-8"
-    )
-    return save_checkpoint(
-        output_dir / "checkpoint_last.pt",
-        model=model,
-        optimizer=optimizer,
-        step=max_steps,
-        run_config=run_config.to_dict(),
-        metadata=metadata,
-    )
+    metadata["world_size"] = context.world_size
+    metadata["rank"] = context.rank
+    if context.is_primary:
+        (output_dir / "metadata.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        (output_dir / "metrics.json").write_text(
+            json.dumps(history, indent=2) + "\n", encoding="utf-8"
+        )
+        result = save_checkpoint(
+            output_dir / "checkpoint_last.pt",
+            model=base_model,
+            optimizer=optimizer,
+            step=max_steps,
+            run_config=run_config.to_dict(),
+            metadata=metadata,
+        )
+    else:
+        result = output_dir / "checkpoint_last.pt"
+    cleanup_distributed(context)
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
