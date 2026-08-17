@@ -18,7 +18,7 @@ training:
   dtype: float16
   batch_size: 1
   grad_accumulation_steps: 32
-  max_steps: 1000
+  max_steps: 5000
   learning_rate: 0.0003
   min_learning_rate: 0.00003
   warmup_steps: 250

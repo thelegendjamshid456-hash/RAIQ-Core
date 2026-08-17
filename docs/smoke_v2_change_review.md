@@ -13,7 +13,7 @@ The new file is `configs/200m_t4_smoke_v2.yaml`. The model architecture, tokeniz
 | Setting | Existing smoke value | Fresh smoke-v2 value |
 |---|---:|---:|
 | `model.name` | `RAIQ-200M-v1-T4-smoke` | `RAIQ-200M-v1-T4-smoke-v2` |
-| `training.max_steps` | `100` | `1000` |
+| `training.max_steps` | `100` | `5000` |
 | `training.learning_rate` | `0.00001` | `0.0003` |
 | `training.min_learning_rate` | `0.000001` | `0.00003` |
 | `training.warmup_steps` | `32` | `250` |
@@ -29,7 +29,7 @@ training:
   dtype: float16
   batch_size: 1
   grad_accumulation_steps: 32
-  max_steps: 1000
+  max_steps: 5000
   learning_rate: 0.0003
   min_learning_rate: 0.00003
   warmup_steps: 250
@@ -60,7 +60,7 @@ python -m raiq.training.train \
   --config configs/200m_t4_smoke_v2.yaml \
   --run-name raiq-200m-t4-smoke-v2 \
   --output-dir /content/drive/MyDrive/RAIQ/checkpoints \
-  --max-steps 1000
+  --max-steps 5000
 ```
 
 This command starts at step 0 and writes to:

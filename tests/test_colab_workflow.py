@@ -24,7 +24,7 @@ def test_smoke_v2_config_uses_long_warmup_and_preserves_safety_invariants() -> N
     config = load_config(ROOT / 'configs/200m_t4_smoke_v2.yaml')
     training = config.training
     assert config.model.name == 'RAIQ-200M-v1-T4-smoke-v2'
-    assert training.max_steps == 1000
+    assert training.max_steps == 5000
     assert training.learning_rate == 3e-4
     assert training.min_learning_rate == 3e-5
     assert training.warmup_steps == 250
