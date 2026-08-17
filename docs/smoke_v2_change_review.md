@@ -59,14 +59,14 @@ The updated notebook now uses the v2 configuration and a new checkpoint path. It
 python -m raiq.training.train \
   --config configs/200m_t4_smoke_v2.yaml \
   --run-name raiq-200m-t4-smoke-v2 \
-  --output-dir /content/drive/MyDrive/RAIQ/checkpoints \
+  --output-dir /content/drive/MyDrive/Raiq/checkpoints \
   --max-steps 5000
 ```
 
 This command starts at step 0 and writes to:
 
 ```text
-/content/drive/MyDrive/RAIQ/checkpoints/raiq-200m-t4-smoke-v2/
+/content/drive/MyDrive/Raiq/checkpoints/raiq-200m-t4-smoke-v2/
 ```
 
 It cannot overwrite the earlier run unless that new directory name is manually reused.

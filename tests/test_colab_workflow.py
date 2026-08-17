@@ -30,6 +30,10 @@ def test_smoke_v2_config_uses_long_warmup_and_preserves_safety_invariants() -> N
     assert training.warmup_steps == 250
     assert training.grad_clip_norm == 1.0
     assert training.finite_diagnostics is True
+    assert config.data.train_path == '/content/drive/MyDrive/Raiq/datasets/technical_toy_train.txt'
+    assert config.data.validation_path == '/content/drive/MyDrive/Raiq/datasets/technical_toy_validation.txt'
+    assert config.data.tokenizer_path == '/content/drive/MyDrive/Raiq/tokenizer/raiq_code_bpe.json'
+    assert config.data.corpus_manifest_path == '/content/drive/MyDrive/Raiq/manifests/technical_smoke_v1.json'
 
     initial_lr = warmup_cosine_lr(
         0,

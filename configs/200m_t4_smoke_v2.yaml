@@ -32,9 +32,9 @@ training:
 data:
   dataset_name: raiq-local-code
   dataset_version: local-inspection-v1
-  train_path: /content/drive/MyDrive/RAIQ/datasets/technical_toy_train.txt
-  validation_path: /content/drive/MyDrive/RAIQ/datasets/technical_toy_validation.txt
+  train_path: /content/drive/MyDrive/Raiq/datasets/technical_toy_train.txt
+  validation_path: /content/drive/MyDrive/Raiq/datasets/technical_toy_validation.txt
   tokenizer_name: raiq-bpe
   tokenizer_version: colab-trained-v1
-  tokenizer_path: /content/drive/MyDrive/RAIQ/tokenizer/raiq_code_bpe.json
-  corpus_manifest_path: /content/drive/MyDrive/RAIQ/manifests/technical_smoke_v1.json
+  tokenizer_path: /content/drive/MyDrive/Raiq/tokenizer/raiq_code_bpe.json
+  corpus_manifest_path: /content/drive/MyDrive/Raiq/manifests/technical_smoke_v1.json
