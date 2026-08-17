@@ -46,15 +46,56 @@ def build_optimizer(model: RAIQModel, learning_rate: float, weight_decay: float)
     )
 
 
+def _attach_finite_diagnostics(model: torch.nn.Module) -> list[torch.utils.hooks.RemovableHandle]:
+    """Attach leaf-module hooks that report the first non-finite tensor and component."""
+
+    handles: list[torch.utils.hooks.RemovableHandle] = []
+
+    def tensors(value: object) -> list[Tensor]:
+        if isinstance(value, Tensor):
+            return [value]
+        if isinstance(value, (tuple, list)):
+            return [item for nested in value for item in tensors(nested)]
+        return []
+
+    def forward_hook(module: torch.nn.Module, _inputs: tuple[object, ...], output: object) -> None:
+        for tensor in tensors(output):
+            if not torch.isfinite(tensor.detach()).all():
+                raise RuntimeError(
+                    f"non-finite forward output in {module.__class__.__name__}"
+                )
+
+    def backward_hook(
+        module: torch.nn.Module,
+        grad_input: tuple[Tensor | None, ...],
+        grad_output: tuple[Tensor | None, ...],
+    ) -> None:
+        for tensor in (*grad_input, *grad_output):
+            if tensor is not None and not torch.isfinite(tensor.detach()).all():
+                raise RuntimeError(
+                    f"non-finite backward gradient in {module.__class__.__name__}"
+                )
+
+    for module in model.modules():
+        if not any(module.children()):
+            handles.append(module.register_forward_hook(forward_hook))
+            handles.append(module.register_full_backward_hook(backward_hook))
+    return handles
+
+
 def _make_grad_scaler(device: torch.device, dtype: torch.dtype) -> torch.amp.GradScaler | None:
     """Create a scaler only for CUDA FP16; keep FP32 and BF16 paths unscaled."""
 
     if device.type != "cuda" or dtype != torch.float16:
         return None
     try:
-        return torch.amp.GradScaler("cuda", enabled=True)
+        return torch.amp.GradScaler(
+            "cuda", enabled=True, init_scale=1024.0, growth_interval=2000, backoff_factor=0.5
+        )
     except (AttributeError, TypeError):
-        return torch.cuda.amp.GradScaler(enabled=True)
+        return torch.cuda.amp.GradScaler(
+            enabled=True, init_scale=1024.0, growth_interval=2000, backoff_factor=0.5
+        )
 
 
 def _check_finite_loss(loss: Tensor, step: int) -> None:
@@ -157,6 +198,9 @@ def run_training(args: argparse.Namespace) -> Path:
 
     # Keep trainable master parameters in FP32. CUDA autocast controls forward precision.
     model = RAIQModel(run_config.model).to(device=device, dtype=torch.float32)
+    diagnostic_handles = (
+        _attach_finite_diagnostics(model) if training.finite_diagnostics else []
+    )
     if context.enabled:
         model = DistributedDataParallel(
             model,
@@ -310,6 +354,8 @@ def run_training(args: argparse.Namespace) -> Path:
         )
     else:
         result = output_dir / "checkpoint_last.pt"
+    for handle in diagnostic_handles:
+        handle.remove()
     cleanup_distributed(context)
     return result
 

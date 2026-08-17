@@ -78,3 +78,19 @@ def test_scaler_state_round_trip_is_backward_compatible(tmp_path) -> None:
     )
     assert payload["scaler_state"] == {"scale": 128.0}
     assert restored_scaler.loaded == {"scale": 128.0}
+
+
+def test_one_hundred_optimizer_steps_keep_loss_and_gradients_finite() -> None:
+    torch.manual_seed(23)
+    model = RAIQModel(tiny_config())
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-5)
+    for step in range(1, 101):
+        optimizer.zero_grad(set_to_none=True)
+        tokens = torch.randint(0, 128, (1, 8))
+        output = model(tokens, labels=tokens.roll(-1, dims=1))
+        assert output.loss is not None and torch.isfinite(output.loss)
+        output.loss.backward()
+        gradient_norm = _check_finite_gradients(model, step)
+        assert torch.isfinite(torch.tensor(gradient_norm))
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()

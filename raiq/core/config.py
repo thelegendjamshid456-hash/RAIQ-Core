@@ -72,6 +72,7 @@ class TrainingConfig:
     eval_interval: int = 20
     save_interval: int = 20
     log_interval: int = 5
+    finite_diagnostics: bool = False
 
     def __post_init__(self) -> None:
         positive_ints = (
