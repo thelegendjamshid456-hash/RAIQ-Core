@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import torch
 
 from raiq.core import ModelConfig, RAIQModel
@@ -33,6 +35,22 @@ def test_model_forward_loss_and_gradients() -> None:
     output.loss.backward()
     assert model.token_embeddings.weight.grad is not None
     assert model.parameter_count() > 0
+
+
+def test_gpt_style_initialization_preserves_residual_scaling() -> None:
+    torch.manual_seed(19)
+    config = tiny_config()
+    model = RAIQModel(config)
+    embedding_std = float(model.token_embeddings.weight.std(unbiased=False))
+    query_std = float(model.transformer.blocks[0].attention.q_proj.weight.std(unbiased=False))
+    residual_std = float(
+        model.transformer.blocks[0].attention.out_proj.weight.std(unbiased=False)
+    )
+    residual_target = 0.02 / math.sqrt(2.0 * config.n_layers)
+
+    assert abs(embedding_std - 0.02) < 0.003
+    assert abs(query_std - 0.02) < 0.003
+    assert abs(residual_std - residual_target) < 0.003
 
 
 def test_causal_mask_prevents_future_leakage() -> None:
