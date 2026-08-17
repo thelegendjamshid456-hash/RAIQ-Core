@@ -25,6 +25,7 @@ dev = [
 [project.scripts]
 raiq-train = "raiq.training.train:main"
 raiq-generate = "raiq.inference.generate:main"
+raiq-plan = "raiq.agent.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["raiq*"]
