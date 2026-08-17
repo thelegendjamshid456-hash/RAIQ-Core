@@ -156,3 +156,24 @@ def test_cpu_run_persists_token_throughput_metadata(tmp_path) -> None:
     assert resumed_metadata["start_step"] == 1
     assert resumed_metadata["optimizer_steps_completed"] == 1
     assert resumed_metadata["resume_checkpoint"] == str(checkpoint.resolve())
+    assert resumed_metadata["metrics_history_status"] == "restored"
+
+    (resumed_checkpoint.parent / "metrics.json").unlink()
+    recovered_checkpoint = run_training(
+        argparse.Namespace(
+            config=str(config_path),
+            run_name="cpu-telemetry",
+            output_dir=str(tmp_path / "artifacts"),
+            max_steps=3,
+            resume=str(resumed_checkpoint),
+        )
+    )
+    recovered_history = json.loads(
+        (recovered_checkpoint.parent / "metrics.json").read_text(encoding="utf-8")
+    )
+    recovered_metadata = json.loads(
+        (recovered_checkpoint.parent / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert [record["step"] for record in recovered_history] == [3]
+    assert recovered_metadata["start_step"] == 2
+    assert recovered_metadata["metrics_history_status"] == "missing_before_resume"

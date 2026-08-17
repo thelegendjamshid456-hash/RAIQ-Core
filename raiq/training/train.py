@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import platform
 import time
 from contextlib import nullcontext
@@ -126,6 +127,14 @@ def cycle(loader: DataLoader[tuple[Tensor, Tensor]]) -> Iterator[tuple[Tensor, T
         yield from loader
 
 
+def _write_json_atomic(path: Path, payload: object) -> None:
+    """Persist a JSON artifact atomically so interruption cannot leave a partial file."""
+
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
 @torch.inference_mode()
 def evaluate(
     model: RAIQModel,
@@ -226,21 +235,25 @@ def run_training(args: argparse.Namespace) -> Path:
 
     history: list[dict[str, float | int]] = []
     metrics_path = output_dir / "metrics.json"
+    metrics_history_status = "new_run"
     if start_step > 0:
-        if not metrics_path.is_file():
-            raise FileNotFoundError(
-                f"cannot resume at step {start_step} without existing metrics: {metrics_path}"
-            )
-        loaded_history = json.loads(metrics_path.read_text(encoding="utf-8"))
-        if not isinstance(loaded_history, list) or not loaded_history:
-            raise ValueError(f"resume metrics must be a non-empty list: {metrics_path}")
-        final_record = loaded_history[-1]
-        if int(final_record.get("step", -1)) != start_step:
-            raise ValueError(
-                f"resume metrics end at step {final_record.get('step')}, "
-                f"but checkpoint is step {start_step}"
-            )
-        history = loaded_history
+        metrics_history_status = "missing_before_resume"
+        if metrics_path.is_file():
+            loaded_history = json.loads(metrics_path.read_text(encoding="utf-8"))
+            if not isinstance(loaded_history, list) or any(
+                not isinstance(record, dict) for record in loaded_history
+            ):
+                raise ValueError(f"resume metrics must be a list of records: {metrics_path}")
+            matching_history = [
+                record for record in loaded_history if int(record.get("step", -1)) <= start_step
+            ]
+            if matching_history and int(matching_history[-1].get("step", -1)) == start_step:
+                history = matching_history
+                metrics_history_status = (
+                    "restored" if len(matching_history) == len(loaded_history) else "truncated_to_checkpoint"
+                )
+            elif loaded_history:
+                metrics_history_status = "does_not_include_checkpoint_step"
 
     metadata = {
         "model": base_model.metadata(),
@@ -260,14 +273,11 @@ def run_training(args: argparse.Namespace) -> Path:
         "platform": platform.platform(),
         "started_at_unix": time.time(),
         "resume_checkpoint": None if args.resume is None else str(Path(args.resume).resolve()),
+        "metrics_history_status": metrics_history_status,
     }
     if context.is_primary:
-        (output_dir / "run_config.json").write_text(
-            json.dumps(run_config.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        (output_dir / "metadata.json").write_text(
-            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        _write_json_atomic(output_dir / "run_config.json", run_config.to_dict())
+        _write_json_atomic(output_dir / "metadata.json", metadata)
 
     train_iterator = cycle(train_loader)
     model.train()
@@ -349,6 +359,7 @@ def run_training(args: argparse.Namespace) -> Path:
         if context.is_primary and (completed_step % training.log_interval == 0 or completed_step == 1):
             print(json.dumps(record, sort_keys=True), flush=True)
         if context.is_primary and completed_step % training.save_interval == 0:
+            _write_json_atomic(metrics_path, history)
             save_checkpoint(
                 output_dir / f"checkpoint_step_{completed_step}.pt",
                 model=model,
@@ -380,12 +391,8 @@ def run_training(args: argparse.Namespace) -> Path:
         metadata["cuda_peak_memory_allocated_bytes"] = torch.cuda.max_memory_allocated(device)
         metadata["cuda_peak_memory_reserved_bytes"] = torch.cuda.max_memory_reserved(device)
     if context.is_primary:
-        (output_dir / "metadata.json").write_text(
-            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-        (output_dir / "metrics.json").write_text(
-            json.dumps(history, indent=2) + "\n", encoding="utf-8"
-        )
+        _write_json_atomic(output_dir / "metadata.json", metadata)
+        _write_json_atomic(metrics_path, history)
         result = save_checkpoint(
             output_dir / "checkpoint_last.pt",
             model=base_model,
