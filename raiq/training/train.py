@@ -1,0 +1,229 @@
+"""Command-line training entry point for reproducible RAIQ Core experiments."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import platform
+import time
+from contextlib import nullcontext
+from pathlib import Path
+from typing import Iterator
+
+import torch
+from torch import Tensor
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+
+from raiq.core import RAIQModel, load_config
+from raiq.data.text_dataset import TextBlockDataset
+from raiq.tokenizer.byte_tokenizer import ByteTokenizer
+from raiq.training.checkpoints import load_checkpoint, save_checkpoint
+from raiq.training.utils import resolve_device, resolve_dtype, set_seed, warmup_cosine_lr
+
+
+def build_optimizer(model: RAIQModel, learning_rate: float, weight_decay: float) -> AdamW:
+    """Apply weight decay to matrices while leaving norms and scalar parameters unregularized."""
+
+    decay, no_decay = [], []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        (no_decay if parameter.ndim < 2 or name.endswith("norm.weight") else decay).append(parameter)
+    return AdamW(
+        [
+            {"params": decay, "weight_decay": weight_decay},
+            {"params": no_decay, "weight_decay": 0.0},
+        ],
+        lr=learning_rate,
+        betas=(0.9, 0.95),
+    )
+
+
+def cycle(loader: DataLoader[tuple[Tensor, Tensor]]) -> Iterator[tuple[Tensor, Tensor]]:
+    """Repeat a deterministic data loader indefinitely."""
+
+    while True:
+        yield from loader
+
+
+@torch.inference_mode()
+def evaluate(
+    model: RAIQModel,
+    loader: DataLoader[tuple[Tensor, Tensor]],
+    device: torch.device,
+    *,
+    max_batches: int = 8,
+) -> float:
+    """Return an average next-token loss across a bounded validation sample."""
+
+    model.eval()
+    losses: list[float] = []
+    for batch_index, (inputs, labels) in enumerate(loader):
+        if batch_index >= max_batches:
+            break
+        output = model(inputs.to(device), labels=labels.to(device))
+        if output.loss is None:
+            raise RuntimeError("evaluation forward pass did not return a loss")
+        losses.append(float(output.loss.detach().cpu()))
+    if not losses:
+        raise RuntimeError("validation loader yielded no batches")
+    return sum(losses) / len(losses)
+
+
+def run_training(args: argparse.Namespace) -> Path:
+    """Execute a complete, versioned RAIQ Core training run."""
+
+    run_config = load_config(args.config)
+    training = run_config.training
+    set_seed(training.seed)
+    device = resolve_device(training.device)
+    dtype = resolve_dtype(training.dtype, device)
+    max_steps = args.max_steps if args.max_steps is not None else training.max_steps
+    if max_steps <= 0:
+        raise ValueError("max_steps must be positive")
+
+    output_dir = Path(args.output_dir) / args.run_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer = ByteTokenizer()
+    tokenizer_path = tokenizer.save(output_dir / "tokenizer.json")
+    if tokenizer.vocab_size > run_config.model.vocab_size:
+        raise ValueError("configured model vocabulary is smaller than the selected tokenizer")
+    if not run_config.data.train_path or not run_config.data.validation_path:
+        raise ValueError("training requires data.train_path and data.validation_path")
+
+    train_dataset = TextBlockDataset(run_config.data.train_path, tokenizer, run_config.model.max_seq_len)
+    validation_dataset = TextBlockDataset(run_config.data.validation_path, tokenizer, run_config.model.max_seq_len)
+    generator = torch.Generator().manual_seed(training.seed)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=training.batch_size,
+        shuffle=True,
+        generator=generator,
+        drop_last=False,
+    )
+    validation_loader = DataLoader(validation_dataset, batch_size=training.batch_size, shuffle=False)
+
+    model = RAIQModel(run_config.model).to(device=device, dtype=dtype)
+    optimizer = build_optimizer(model, training.learning_rate, training.weight_decay)
+    start_step = 0
+    if args.resume is not None:
+        payload = load_checkpoint(args.resume, model=model, optimizer=optimizer, map_location=device)
+        start_step = int(payload["step"])
+
+    metadata = {
+        "model": model.metadata(),
+        "dataset": run_config.data.to_dict(),
+        "tokenizer": tokenizer.to_dict(),
+        "tokenizer_path": str(tokenizer_path),
+        "seed": training.seed,
+        "device": str(device),
+        "dtype": training.dtype,
+        "python": platform.python_version(),
+        "torch": torch.__version__,
+        "platform": platform.platform(),
+        "started_at_unix": time.time(),
+    }
+    (output_dir / "run_config.json").write_text(
+        json.dumps(run_config.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (output_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    train_iterator = cycle(train_loader)
+    history: list[dict[str, float | int]] = []
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    started = time.perf_counter()
+    for step in range(start_step, max_steps):
+        lr = warmup_cosine_lr(
+            step,
+            max_steps=max_steps,
+            warmup_steps=training.warmup_steps,
+            max_lr=training.learning_rate,
+            min_lr=training.min_learning_rate,
+        )
+        for group in optimizer.param_groups:
+            group["lr"] = lr
+
+        accumulated_loss = 0.0
+        for _ in range(training.grad_accumulation_steps):
+            inputs, labels = next(train_iterator)
+            inputs, labels = inputs.to(device), labels.to(device)
+            autocast_context = (
+                torch.autocast(device_type=device.type, dtype=dtype)
+                if device.type == "cuda" and dtype != torch.float32
+                else nullcontext()
+            )
+            with autocast_context:
+                output = model(inputs, labels=labels)
+                if output.loss is None:
+                    raise RuntimeError("training forward pass did not return a loss")
+                scaled_loss = output.loss / training.grad_accumulation_steps
+            scaled_loss.backward()
+            accumulated_loss += float(output.loss.detach().cpu())
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), training.grad_clip_norm)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        completed_step = step + 1
+
+        record: dict[str, float | int] = {
+            "step": completed_step,
+            "train_loss": accumulated_loss / training.grad_accumulation_steps,
+            "learning_rate": lr,
+        }
+        if completed_step % training.eval_interval == 0 or completed_step == max_steps:
+            record["validation_loss"] = evaluate(model, validation_loader, device)
+            model.train()
+        history.append(record)
+        if completed_step % training.log_interval == 0 or completed_step == 1:
+            print(json.dumps(record, sort_keys=True), flush=True)
+        if completed_step % training.save_interval == 0:
+            save_checkpoint(
+                output_dir / f"checkpoint_step_{completed_step}.pt",
+                model=model,
+                optimizer=optimizer,
+                step=completed_step,
+                run_config=run_config.to_dict(),
+                metadata=metadata,
+            )
+
+    elapsed_seconds = time.perf_counter() - started
+    metadata["completed_at_unix"] = time.time()
+    metadata["elapsed_seconds"] = elapsed_seconds
+    metadata["max_steps"] = max_steps
+    (output_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (output_dir / "metrics.json").write_text(
+        json.dumps(history, indent=2) + "\n", encoding="utf-8"
+    )
+    return save_checkpoint(
+        output_dir / "checkpoint_last.pt",
+        model=model,
+        optimizer=optimizer,
+        step=max_steps,
+        run_config=run_config.to_dict(),
+        metadata=metadata,
+    )
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Train a RAIQ Core decoder-only language model")
+    parser.add_argument("--config", required=True, help="Path to a RAIQ YAML configuration")
+    parser.add_argument("--run-name", required=True, help="Name for this experiment under the output directory")
+    parser.add_argument("--output-dir", default="artifacts", help="Root directory for generated experiment artifacts")
+    parser.add_argument("--max-steps", type=int, default=None, help="Override configured maximum optimizer steps")
+    parser.add_argument("--resume", default=None, help="Optional checkpoint from which to continue")
+    return parser
+
+
+def main() -> None:
+    checkpoint = run_training(build_parser().parse_args())
+    print(f"Saved checkpoint: {checkpoint}")
+
+
+if __name__ == "__main__":
+    main()

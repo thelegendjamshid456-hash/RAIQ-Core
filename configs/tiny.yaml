@@ -1,0 +1,37 @@
+model:
+  name: RAIQ-Tiny
+  vocab_size: 512
+  max_seq_len: 128
+  n_layers: 4
+  d_model: 128
+  n_heads: 4
+  n_kv_heads: 4
+  d_ff: 344
+  dropout: 0.0
+  rope_theta: 10000.0
+  tie_embeddings: true
+  gradient_checkpointing: false
+
+training:
+  seed: 1337
+  device: cpu
+  dtype: float32
+  batch_size: 4
+  grad_accumulation_steps: 1
+  max_steps: 100
+  learning_rate: 0.0003
+  min_learning_rate: 0.00003
+  warmup_steps: 10
+  weight_decay: 0.1
+  grad_clip_norm: 1.0
+  eval_interval: 20
+  save_interval: 20
+  log_interval: 5
+
+data:
+  dataset_name: technical-toy-v1
+  dataset_version: 1
+  tokenizer_name: raiq-byte-v1
+  tokenizer_version: 1
+  train_path: datasets/technical_toy_train.txt
+  validation_path: datasets/technical_toy_validation.txt

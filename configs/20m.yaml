@@ -1,0 +1,35 @@
+model:
+  name: RAIQ-20M
+  vocab_size: 32768
+  max_seq_len: 1024
+  n_layers: 12
+  d_model: 384
+  n_heads: 6
+  n_kv_heads: 6
+  d_ff: 1024
+  dropout: 0.0
+  rope_theta: 10000.0
+  tie_embeddings: true
+  gradient_checkpointing: false
+
+training:
+  seed: 1337
+  device: cuda
+  dtype: bfloat16
+  batch_size: 8
+  grad_accumulation_steps: 8
+  max_steps: 100000
+  learning_rate: 0.0003
+  min_learning_rate: 0.00003
+  warmup_steps: 1000
+  weight_decay: 0.1
+  grad_clip_norm: 1.0
+  eval_interval: 500
+  save_interval: 1000
+  log_interval: 20
+
+data:
+  dataset_name: raiq-technical-mix
+  dataset_version: unassigned
+  tokenizer_name: raiq-technical-bpe
+  tokenizer_version: unassigned
