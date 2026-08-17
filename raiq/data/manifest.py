@@ -28,7 +28,8 @@ def verify_corpus_manifest(path: str | Path) -> dict[str, Any]:
     if not isinstance(splits, list) or not splits:
         raise ValueError("corpus manifest must contain at least one split")
     for split in splits:
-        split_path = root / split["path"]
+        declared_path = Path(split["path"])
+        split_path = declared_path if declared_path.is_absolute() else root / declared_path
         if not split_path.is_file():
             raise FileNotFoundError(f"manifest split does not exist: {split_path}")
         if split_path.stat().st_size != int(split["bytes"]):
