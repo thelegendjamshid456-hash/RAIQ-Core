@@ -9,7 +9,7 @@ import torch
 
 from raiq.core.config import ModelConfig
 from raiq.core.model import RAIQModel
-from raiq.tokenizer.byte_tokenizer import ByteTokenizer
+from raiq.tokenizer.loader import load_tokenizer
 from raiq.training.checkpoints import load_checkpoint
 
 
@@ -20,7 +20,7 @@ def generate_text(args: argparse.Namespace) -> str:
     model = RAIQModel(model_config).to(args.device)
     load_checkpoint(checkpoint_path, model=model, map_location=args.device)
     tokenizer_path = checkpoint_path.parent / "tokenizer.json"
-    tokenizer = ByteTokenizer.load(tokenizer_path)
+    tokenizer = load_tokenizer(tokenizer_path)
     encoded = tokenizer.encode(args.prompt, add_bos=True)
     if len(encoded) >= model_config.max_seq_len:
         encoded = encoded[-(model_config.max_seq_len - 1) :]

@@ -6,7 +6,7 @@
 
 ## Current milestone
 
-The active milestone is a **tested tiny-model foundation**. It provides the same core interfaces intended for larger configurations: YAML architecture configurations, automatic parameter counting, a decoder-only Transformer with RMSNorm, RoPE, causal self-attention, SwiGLU, tied embeddings, checkpointing, generation, and reproducible training metadata. The tiny configuration is deliberately sized for CPU smoke tests; it is not a substitute for a trained RAIQ-200M model.
+The active milestone is a **tested tiny-model foundation**. It provides the same core interfaces intended for larger configurations: YAML architecture configurations, automatic parameter counting, a decoder-only Transformer with RMSNorm, RoPE, causal self-attention, SwiGLU, tied embeddings, checkpointing, generation, and reproducible training metadata. The repository now also includes a trainable custom BPE tokenizer, a verified corpus-manifest path, and a completed 100-step Tiny-BPE run; see `docs/model_training_milestone_v1.md`. The tiny configuration is deliberately sized for CPU smoke tests; it is not a substitute for a trained RAIQ-200M model.
 
 | Configuration | Intended use | Status |
 |---|---|---|

@@ -8,13 +8,13 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from raiq.tokenizer.byte_tokenizer import ByteTokenizer
+from raiq.tokenizer.loader import RAIQTokenizer
 
 
 class TextBlockDataset(Dataset[tuple[Tensor, Tensor]]):
     """Tokenize a text file and expose fixed next-token prediction windows."""
 
-    def __init__(self, path: str | Path, tokenizer: ByteTokenizer, sequence_length: int) -> None:
+    def __init__(self, path: str | Path, tokenizer: RAIQTokenizer, sequence_length: int) -> None:
         self.path = Path(path)
         self.sequence_length = sequence_length
         if sequence_length < 2:

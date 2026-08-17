@@ -1,0 +1,26 @@
+{
+  "corpus_id": "raiq-technical-smoke-v1",
+  "purpose": "Engineering smoke tests for tokenizer, training, checkpoint, and inference paths.",
+  "production_eligible": false,
+  "source_basis": "User-provided RAIQ technical specification supplied during project setup.",
+  "license_status": "User-provided project material; not a production training-data license determination.",
+  "splits": [
+    {
+      "name": "train",
+      "path": "datasets/technical_toy_train.txt",
+      "sha256": "ae9876c7a281bce19c8c3d2859fea376535585e04bd870b4b28ef908fc5f7fca",
+      "bytes": 13860
+    },
+    {
+      "name": "validation",
+      "path": "datasets/technical_toy_validation.txt",
+      "sha256": "303a135ee9db2f4602d129896ff6fb5570a0c93c097513ab3f749f13563bbaeb",
+      "bytes": 14547
+    }
+  ],
+  "quality_controls": [
+    "Train and validation source ranges are non-overlapping.",
+    "The corpus is retained locally and excluded from Git.",
+    "The corpus is insufficient for model-capability claims."
+  ]
+}

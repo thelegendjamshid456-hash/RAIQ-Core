@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import platform
 import time
 from contextlib import nullcontext
@@ -16,8 +17,10 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 
 from raiq.core import RAIQModel, load_config
+from raiq.data.manifest import verify_corpus_manifest
 from raiq.data.text_dataset import TextBlockDataset
 from raiq.tokenizer.byte_tokenizer import ByteTokenizer
+from raiq.tokenizer.loader import load_tokenizer
 from raiq.training.checkpoints import load_checkpoint, save_checkpoint
 from raiq.training.utils import resolve_device, resolve_dtype, set_seed, warmup_cosine_lr
 
@@ -85,13 +88,27 @@ def run_training(args: argparse.Namespace) -> Path:
 
     output_dir = Path(args.output_dir) / args.run_name
     output_dir.mkdir(parents=True, exist_ok=True)
-    tokenizer = ByteTokenizer()
+    tokenizer = (
+        load_tokenizer(run_config.data.tokenizer_path)
+        if run_config.data.tokenizer_path
+        else ByteTokenizer()
+    )
     tokenizer_path = tokenizer.save(output_dir / "tokenizer.json")
     if tokenizer.vocab_size > run_config.model.vocab_size:
         raise ValueError("configured model vocabulary is smaller than the selected tokenizer")
     if not run_config.data.train_path or not run_config.data.validation_path:
         raise ValueError("training requires data.train_path and data.validation_path")
+    corpus_manifest = None
+    if run_config.data.corpus_manifest_path:
+        corpus_manifest = verify_corpus_manifest(run_config.data.corpus_manifest_path)
 
+    train_text = Path(run_config.data.train_path).read_text(encoding="utf-8")
+    train_token_count = len(tokenizer.encode(train_text, add_bos=True, add_eos=True))
+    tokenizer_metrics = {
+        "train_bytes": len(train_text.encode("utf-8")),
+        "train_tokens": train_token_count,
+        "train_tokens_per_byte": train_token_count / max(1, len(train_text.encode("utf-8"))),
+    }
     train_dataset = TextBlockDataset(run_config.data.train_path, tokenizer, run_config.model.max_seq_len)
     validation_dataset = TextBlockDataset(run_config.data.validation_path, tokenizer, run_config.model.max_seq_len)
     generator = torch.Generator().manual_seed(training.seed)
@@ -116,6 +133,11 @@ def run_training(args: argparse.Namespace) -> Path:
         "dataset": run_config.data.to_dict(),
         "tokenizer": tokenizer.to_dict(),
         "tokenizer_path": str(tokenizer_path),
+        "tokenizer_metrics": tokenizer_metrics,
+        "corpus_manifest": {
+            "path": run_config.data.corpus_manifest_path,
+            "corpus_id": None if corpus_manifest is None else corpus_manifest["corpus_id"],
+        },
         "seed": training.seed,
         "device": str(device),
         "dtype": training.dtype,
@@ -175,7 +197,9 @@ def run_training(args: argparse.Namespace) -> Path:
             "learning_rate": lr,
         }
         if completed_step % training.eval_interval == 0 or completed_step == max_steps:
-            record["validation_loss"] = evaluate(model, validation_loader, device)
+            validation_loss = evaluate(model, validation_loader, device)
+            record["validation_loss"] = validation_loss
+            record["validation_perplexity"] = math.exp(min(validation_loss, 20.0))
             model.train()
         history.append(record)
         if completed_step % training.log_interval == 0 or completed_step == 1:

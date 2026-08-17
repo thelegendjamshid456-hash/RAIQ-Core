@@ -1,0 +1,39 @@
+model:
+  name: RAIQ-Tiny-BPE
+  vocab_size: 384
+  max_seq_len: 128
+  n_layers: 4
+  d_model: 128
+  n_heads: 4
+  n_kv_heads: 4
+  d_ff: 344
+  dropout: 0.0
+  rope_theta: 10000.0
+  tie_embeddings: true
+  gradient_checkpointing: false
+
+training:
+  seed: 20260817
+  device: cpu
+  dtype: float32
+  batch_size: 4
+  grad_accumulation_steps: 1
+  max_steps: 100
+  learning_rate: 0.0003
+  min_learning_rate: 0.00003
+  warmup_steps: 10
+  weight_decay: 0.1
+  grad_clip_norm: 1.0
+  eval_interval: 20
+  save_interval: 20
+  log_interval: 5
+
+data:
+  dataset_name: raiq-technical-smoke
+  dataset_version: v1
+  tokenizer_name: raiq-technical-bpe
+  tokenizer_version: smoke-v1
+  tokenizer_path: artifacts/tokenizers/technical-smoke-bpe-v1.json
+  corpus_manifest_path: data/manifests/technical_smoke_v1.json
+  train_path: datasets/technical_toy_train.txt
+  validation_path: datasets/technical_toy_validation.txt

@@ -102,6 +102,8 @@ class DataConfig:
     tokenizer_version: str | int = "unassigned"
     train_path: str | None = None
     validation_path: str | None = None
+    tokenizer_path: str | None = None
+    corpus_manifest_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
